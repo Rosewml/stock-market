@@ -1,14 +1,20 @@
 <script setup lang="ts">
-import { ElButton, ElIcon, ElInput, ElMessage, ElTable, ElTableColumn } from 'element-plus' // 引入当前页面需要的 Element Plus 组件。
-import { Bell, Search } from '@element-plus/icons-vue' // 引入顶部工具区需要的图标组件。
+import { ElButton, ElDropdown, ElIcon, ElInput, ElMessage, ElTable, ElTableColumn } from 'element-plus' // 引入当前页面需要的 Element Plus 组件。
+import { ArrowDown, Bell, Search } from '@element-plus/icons-vue' // 引入顶部工具区需要的图标组件。
+import html2canvas from 'html2canvas' // 引入页面截图工具以便将当前手机屏幕导出为 png 图片。
+import JSZip from 'jszip' // 引入压缩包工具以便将批量截图打包为 zip 下载。
 import { defaultPresetStocks, type PresetStock } from '~~/shared/preset-stocks' // 引入默认预设股票与类型定义。
 import 'element-plus/dist/index.css' // 引入 Element Plus 基础样式。
 
 const stockName = ref('') // 绑定新增股票输入框内容。
 const batchDownloadCount = ref('10') // 绑定批量下载的数量输入值。
 const presetTableRef = ref<InstanceType<typeof ElTable> | null>(null) // 绑定预设股票表格实例。
+const phoneScreenRef = ref<HTMLElement | null>(null) // 绑定手机屏幕容器实例供下载图片时直接截图。
 const isLookingUpStock = ref(false) // 标记新增股票查询是否正在执行。
 const isSavingPresets = ref(false) // 标记预设股票是否正在保存。
+const isDownloadingPreviewImage = ref(false) // 标记当前是否正在导出手机预览图片。
+const isBatchDownloadingPreviewImages = ref(false) // 标记当前是否正在批量导出手机预览图片。
+const isApplyingPresetSelection = ref(false) // 标记当前是否正在回填表格勾选状态。
 const presetSaveMessage = ref('') // 记录预设股票保存提示文本。
 
 interface StocksResponse {
@@ -21,6 +27,46 @@ interface StockLookupResponse {
   // 定义股票查询接口返回结构。
   stock: PresetStock // 返回匹配成功的股票预设对象。
 } // 结束股票查询接口结构定义。
+
+interface MarketHoldingRow {
+  // 定义手机预览使用的单条持仓原始数据结构。
+  name: string // 记录股票名称。
+  code: string // 记录股票代码。
+  currentPrice: number // 记录接口返回的当前价格。
+  quantity: number // 记录接口生成的持仓数量。
+  buyPrice: number // 记录接口生成的买入价格。
+  profitAmount: number // 记录接口计算的收益金额。
+  returnRate: number // 记录接口计算的收益率。
+} // 结束手机预览持仓数据结构定义。
+
+interface MarketDataResponse {
+  // 定义手机预览行情接口响应结构。
+  generatedAt: string // 记录本次行情生成时间。
+  holdings: MarketHoldingRow[] // 记录返回的持仓行情数组。
+} // 结束手机预览行情接口结构定义。
+
+interface PhoneHoldingRow {
+  // 定义手机界面最终渲染的格式化持仓结构。
+  name: string // 记录股票名称文本。
+  code: string // 记录股票代码文本。
+  qty: string // 记录格式化后的持仓数量文本。
+  buy: string // 记录格式化后的买入价文本。
+  price: string // 记录格式化后的当前价文本。
+  profit: string // 记录格式化后的收益金额文本。
+  rate: string // 记录格式化后的收益率文本。
+  up: boolean // 记录当前收益是否为正值。
+} // 结束手机界面持仓结构定义。
+
+interface MarketCardRow {
+  // 定义手机行情卡片最终渲染的数据结构。
+  label: string // 记录卡片固定标题文本。
+  name: string // 记录卡片第一行的大盘点位文本。
+  value: string // 记录卡片第二行的涨跌点数文本。
+  change: string // 记录卡片第三行的涨跌幅文本。
+  points: string // 记录行情折线图使用的折线路径点位文本。
+} // 结束手机行情卡片结构定义。
+
+const maxPreviewHoldings = 9 // 限制手机持仓区最多展示九条数据。
 
 const clonePresetStocks = (stocks: PresetStock[]): PresetStock[] => stocks.map(stock => ({ ...stock })) // 复制预设股票数组以隔离引用。
 
@@ -46,8 +92,6 @@ const themes = [
     accentDark: '#063fc7',
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'],
     assetLabel: '총 자산',
-    assetValue: '386,247,300',
-    today: '오늘 +5,327,800원 (+1.40%)',
     badge: '자산분석',
     adColor: '#eaf2ff',
     adAccent: '#0757ff',
@@ -61,8 +105,6 @@ const themes = [
     accentDark: '#087f47',
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'],
     assetLabel: '내 자산',
-    assetValue: '358,672,150',
-    today: '오늘 +2,874,350원 (+0.81%)',
     badge: '자산분석',
     adColor: '#eef8f2',
     adAccent: '#08a758',
@@ -76,8 +118,6 @@ const themes = [
     accentDark: '#e94600',
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'],
     assetLabel: '나의 자산',
-    assetValue: '395,880,250',
-    today: '오늘 +4,521,300원 (+1.15%)',
     badge: '자산분석',
     adColor: '#fff2e7',
     adAccent: '#f15a16',
@@ -91,8 +131,6 @@ const themes = [
     accentDark: '#1d2f8a', // 定义经典海军蓝主题深色。
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'], // 定义经典海军蓝主题导航。
     assetLabel: '총 자산', // 定义经典海军蓝主题资产标题。
-    assetValue: '412,908,560', // 定义经典海军蓝主题资产金额。
-    today: '오늘 +3,108,900원 (+0.76%)', // 定义经典海军蓝主题今日收益。
     badge: '자산리포트', // 定义经典海军蓝主题徽标文案。
     adColor: '#ecf2ff', // 定义经典海军蓝主题广告底色。
     adAccent: '#1e40af', // 定义经典海军蓝主题广告强调色。
@@ -106,8 +144,6 @@ const themes = [
     accentDark: '#0a7a76', // 定义经典青碧色主题深色。
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'], // 定义经典青碧色主题导航。
     assetLabel: '내 자산', // 定义经典青碧色主题资产标题。
-    assetValue: '367,145,980', // 定义经典青碧色主题资产金额。
-    today: '오늘 +1,925,470원 (+0.53%)', // 定义经典青碧色主题今日收益。
     badge: '투자분석', // 定义经典青碧色主题徽标文案。
     adColor: '#e8f8f6', // 定义经典青碧色主题广告底色。
     adAccent: '#0f9f9a', // 定义经典青碧色主题广告强调色。
@@ -121,8 +157,6 @@ const themes = [
     accentDark: '#a11d2e', // 定义经典绯红色主题深色。
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'], // 定义经典绯红色主题导航。
     assetLabel: '투자 자산', // 定义经典绯红色主题资产标题。
-    assetValue: '401,556,240', // 定义经典绯红色主题资产金额。
-    today: '오늘 +6,117,300원 (+1.55%)', // 定义经典绯红色主题今日收益。
     badge: '수익분석', // 定义经典绯红色主题徽标文案。
     adColor: '#fff0f2', // 定义经典绯红色主题广告底色。
     adAccent: '#c62839', // 定义经典绯红色主题广告强调色。
@@ -136,8 +170,6 @@ const themes = [
     accentDark: '#5521a8', // 定义经典紫罗兰主题深色。
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'], // 定义经典紫罗兰主题导航。
     assetLabel: '총 보유자산', // 定义经典紫罗兰主题资产标题。
-    assetValue: '389,226,710', // 定义经典紫罗兰主题资产金额。
-    today: '오늘 +2,418,660원 (+0.63%)', // 定义经典紫罗兰主题今日收益。
     badge: '포트폴리오', // 定义经典紫罗兰主题徽标文案。
     adColor: '#f4edff', // 定义经典紫罗兰主题广告底色。
     adAccent: '#6d28d9', // 定义经典紫罗兰主题广告强调色。
@@ -151,8 +183,6 @@ const themes = [
     accentDark: '#9d6a10', // 定义经典金棕色主题深色。
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'], // 定义经典金棕色主题导航。
     assetLabel: '나의 총자산', // 定义经典金棕色主题资产标题。
-    assetValue: '428,663,900', // 定义经典金棕色主题资产金额。
-    today: '오늘 +1,782,440원 (+0.42%)', // 定义经典金棕色主题今日收益。
     badge: '프리미엄', // 定义经典金棕色主题徽标文案。
     adColor: '#fff7e7', // 定义经典金棕色主题广告底色。
     adAccent: '#c98a18', // 定义经典金棕色主题广告强调色。
@@ -166,8 +196,6 @@ const themes = [
     accentDark: '#1f2937', // 定义经典炭黑色主题深色。
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'], // 定义经典炭黑色主题导航。
     assetLabel: '총 투자금', // 定义经典炭黑色主题资产标题。
-    assetValue: '376,508,120', // 定义经典炭黑色主题资产金额。
-    today: '오늘 +954,320원 (+0.25%)', // 定义经典炭黑色主题今日收益。
     badge: '투자리뷰', // 定义经典炭黑色主题徽标文案。
     adColor: '#f1f3f5', // 定义经典炭黑色主题广告底色。
     adAccent: '#374151', // 定义经典炭黑色主题广告强调色。
@@ -181,8 +209,6 @@ const themes = [
     accentDark: '#be185d', // 定义经典玫红色主题深色。
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'], // 定义经典玫红色主题导航。
     assetLabel: '내 보유자산', // 定义经典玫红色主题资产标题。
-    assetValue: '393,774,880', // 定义经典玫红色主题资产金额。
-    today: '오늘 +3,864,250원 (+0.99%)', // 定义经典玫红色主题今日收益。
     badge: '오늘의전략', // 定义经典玫红色主题徽标文案。
     adColor: '#fff0f7', // 定义经典玫红色主题广告底色。
     adAccent: '#e11d74', // 定义经典玫红色主题广告强调色。
@@ -196,8 +222,6 @@ const themes = [
     accentDark: '#0369a1', // 定义经典天青色主题深色。
     nav: ['HOME', ' 관심그룹', '국내주식', '해외주식', '상품', '연금/절세'], // 定义经典天青色主题导航。
     assetLabel: '총 자산', // 定义经典天青色主题资产标题。
-    assetValue: '384,192,630', // 定义经典天青色主题资产金额。
-    today: '오늘 +2,290,110원 (+0.60%)', // 定义经典天青色主题今日收益。
     badge: '자산케어', // 定义经典天青色主题徽标文案。
     adColor: '#eaf7ff', // 定义经典天青色主题广告底色。
     adAccent: '#0284c7', // 定义经典天青色主题广告强调色。
@@ -239,24 +263,299 @@ const presets = ref<PresetStock[]>(clonePresetStocks(initialPresetResponse.stock
 const savedPresets = ref<PresetStock[]>(clonePresetStocks(initialPresetResponse.stocks)) // 保存最近一次已落盘的预设股票快照。
 const hasSavedPresetFile = ref(Boolean(initialPresetResponse.persisted)) // 标记当前预设股票是否已经真正写入本地 json。
 
-const holdings = [
-  { name: '삼성전자', code: '005930', qty: '806', buy: '72,650', price: '88,400', profit: '+12,669,450', rate: '+21.65%', up: true },
-  { name: '두산에너빌리티', code: '034020', qty: '1,247', buy: '19,870', price: '27,350', profit: '+9,321,560', rate: '+37.65%', up: true },
-  { name: '한화에어로스페이스', code: '012450', qty: '91', buy: '268,750', price: '307,000', profit: '+3,481,750', rate: '+14.20%', up: true },
-  { name: '카카오뱅크', code: '323410', qty: '527', buy: '22,850', price: '25,400', profit: '+1,345,950', rate: '+11.17%', up: true },
-  { name: 'HMM', code: '011200', qty: '243', buy: '17,650', price: '20,600', profit: '+717,450', rate: '+16.71%', up: true },
-  { name: 'ISC', code: '095340', qty: '48', buy: '74,800', price: '89,100', profit: '+686,400', rate: '+19.11%', up: true },
-  { name: '리노공업', code: '058470', qty: '35', buy: '187,300', price: '206,500', profit: '+672,000', rate: '+10.27%', up: true },
-  { name: '이수페타시스', code: '007660', qty: '142', buy: '34,950', price: '33,150', profit: '-255,600', rate: '-5.15%', up: false },
-  { name: '한국전력', code: '015760', qty: '942', buy: '20,350', price: '19,720', profit: '-593,460', rate: '-3.09%', up: false }
-]
-
-const marketCards = [
-  { name: 'KOSPI', value: '2,628.38', change: '▲ 12.04 (+0.46%)' },
-  { name: 'KOSDAQ', value: '716.42', change: '▲ 4.25 (+0.60%)' }
-]
+const marketData = ref<MarketDataResponse>({
+  // 保存当前手机界面的最新行情响应，并避免服务端渲染阶段提前请求实时接口。
+  generatedAt: '', // 初始化时先写入空时间占位。
+  holdings: [] // 初始化时先写入空持仓列表。
+}) // 结束手机行情初始状态定义。
+const isRefreshingMarketData = ref(false) // 标记当前是否正在刷新手机持仓行情。
+const hasLoadedInitialMarketData = ref(false) // 标记页面是否已经成功拿到过首次真实行情数据。
+const shouldShowHoldingsLoading = computed(() => !hasLoadedInitialMarketData.value) // 仅在首次真实行情成功返回前显示持仓区 loading。
+const randomRefreshIntervalMs = 1500 // 定义手机界面整批随机刷新的统一间隔为一千五百毫秒。
+const marketDataRefreshTimer = ref<ReturnType<typeof window.setInterval> | null>(null) // 保存持仓接口轮询定时器引用。
+const phoneRandomRefreshTimer = ref<ReturnType<typeof window.setInterval> | null>(null) // 保存本地随机字段轮询定时器引用。
 
 const hasPresetChanges = computed(() => !hasSavedPresetFile.value || JSON.stringify(normalizePresetStocks(presets.value)) !== JSON.stringify(normalizePresetStocks(savedPresets.value))) // 判断当前预设股票是否存在未保存修改。
+
+const numberFormatter = new Intl.NumberFormat('ko-KR') // 创建韩式千分位格式化器供持仓数字复用。
+
+const formatInteger = (value: number): string => numberFormatter.format(Math.round(value)) // 将数值格式化为不带小数的千分位字符串。
+
+const formatSignedAmount = (value: number): string => `${value >= 0 ? '+' : '-'}${formatInteger(Math.abs(value))}` // 将收益金额格式化为带正负号的整数文本。
+
+const formatSignedRate = (value: number): string => `${value >= 0 ? '+' : '-'}${Math.abs(value).toFixed(2)}%` // 将收益率格式化为带正负号的百分比文本。
+
+const previewHoldings = computed<PhoneHoldingRow[]>(() =>
+  marketData.value.holdings.slice(0, maxPreviewHoldings).map(row => ({
+    // 将接口原始行情转换为手机界面需要的显示格式。
+    name: row.name, // 写入股票名称文本。
+    code: row.code, // 写入股票代码文本。
+    qty: formatInteger(row.quantity), // 写入格式化后的持仓数量。
+    buy: formatInteger(row.buyPrice), // 写入格式化后的买入价。
+    price: formatInteger(row.currentPrice), // 写入格式化后的当前价。
+    profit: formatSignedAmount(row.profitAmount), // 写入格式化后的收益金额。
+    rate: formatSignedRate(row.returnRate), // 写入格式化后的收益率。
+    up: row.profitAmount >= 0 // 根据收益金额判断涨跌颜色。
+  }))
+) // 结束手机持仓显示格式转换。
+
+const holdingPlaceholderRows = computed(() => Array.from({ length: Math.max(0, maxPreviewHoldings - previewHoldings.value.length) }, (_, index) => index)) // 在不足九条时补齐空白占位行以保持区块总高度不变。
+
+const phoneAssetValue = ref(386247300) // 保存手机资产卡片当前展示的总资产数值。
+const phoneTodayProfitAmount = ref(5327800) // 保存手机资产卡片当前展示的今日收益金额数值。
+const phoneTodayProfitRate = ref(2.14) // 保存手机资产卡片当前展示的今日收益率数值。
+const phoneTime = ref('09:41') // 保存手机状态栏当前展示时间文本。
+const notificationBadgeCount = ref(2) // 保存铃铛角标当前展示的未读数字。
+const batteryLevel = ref(84) // 保存手机状态栏当前电池电量百分比，后续可接入定时器动态更新。
+
+const normalizedBatteryLevel = computed(() => Math.min(100, Math.max(0, batteryLevel.value))) // 将电池电量限制在零到一百之间，避免样式宽度越界。
+
+const batteryFillWidth = computed(() => Number(((normalizedBatteryLevel.value / 100) * 15.5).toFixed(2))) // 将当前电量转换为电池 SVG 内部填充宽度，便于按原生比例动态绘制。
+const phoneTodayProfitAmountText = computed(() => `+${formatInteger(phoneTodayProfitAmount.value)}원`) // 将今日收益金额格式化为带加号和韩元单位的文本。
+const phoneTodayProfitRateText = computed(() => `(+${phoneTodayProfitRate.value.toFixed(2)}%)`) // 将今日收益率格式化为保留两位小数的百分比文本。
+const marketCards = ref<MarketCardRow[]>([
+  // 保存手机行情卡片当前展示的两组随机数据。
+  { label: 'KOSPI', name: '2,628.38', value: '12.04', change: '(+1.46%)', points: '4,44 18,40 30,41 41,35 56,34 68,29 78,27 88,24 98,21 110,18 124,15' }, // 初始化 KOSPI 卡片数据，避免首屏为空。
+  { label: 'KOSDAQ', name: '716.42', value: '4.25', change: '(+1.60%)', points: '4,43 18,39 30,37 41,38 56,33 68,31 78,28 88,26 98,23 110,20 124,17' } // 初始化 KOSDAQ 卡片数据，避免首屏为空。
+]) // 结束手机行情卡片初始状态定义。
+
+const formatPhoneTimePart = (value: number): string => String(value).padStart(2, '0') // 将小时或分钟格式化为两位数字文本。
+const formatDecimal = (value: number): string => value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) // 将小数格式化为保留两位小数且带千分位的文本。
+
+const randomInt = (min: number, max: number): number => Math.floor(Math.random() * (max - min + 1) + min) // 在给定整数区间内生成随机数。
+const randomDecimal = (min: number, max: number): number => Number((Math.random() * (max - min) + min).toFixed(2)) // 在给定小数区间内生成保留两位小数的随机数。
+const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value)) // 将数值限制在给定区间内避免折线越界。
+
+const buildRandomPhoneTime = (): string => {
+  // 生成 00:00 到 23:59 之间的随机手机时间。
+  const randomHour = randomInt(0, 23) // 随机生成零到二十三之间的小时值。
+  const randomMinute = randomInt(0, 59) // 随机生成零到五十九之间的分钟值。
+  return `${formatPhoneTimePart(randomHour)}:${formatPhoneTimePart(randomMinute)}` // 拼出符合状态栏格式的时间文本。
+} // 结束随机手机时间生成函数定义。
+
+const buildRandomPhoneAssetValue = (): number => randomInt(100000000, 99999999999) // 生成九位到十一位之间的随机总资产数值。
+
+const buildRandomPhoneTodayProfitAmount = (): number => randomInt(1000000, 999999999) // 生成七位到九位之间的随机今日收益金额数值。
+
+const buildRandomPhoneTodayProfitRate = (): number => randomInt(200, 400) / 100 // 生成两到四之间且保留两位小数步进的随机今日收益率数值。
+
+const buildRandomBatteryLevel = (): number => randomInt(50, 100) // 生成五十到一百之间的随机手机电量百分比。
+
+const buildRandomNotificationBadgeCount = (): number => randomInt(1, 9) // 生成一到九之间的随机铃铛角标数字。
+
+const buildRisingTrendPoints = (): string => {
+  // 生成更接近真实分时图的上涨折线点位文本。
+  const xAxisPoints = [4, 8, 12, 16, 21, 26, 31, 36, 41, 46, 52, 58, 64, 70, 76, 82, 88, 94, 100, 106, 112, 118, 124] // 固定更密集的拐点让折线更碎更像分时图。
+  let currentY = randomInt(40, 48) // 先从图表左下区域附近随机一个起点高度。
+  const pointPairs = xAxisPoints.map((pointX, index) => {
+    // 遍历每个横坐标并逐步生成向上的纵坐标。
+    if (index > 0) {
+      // 从第二个点开始逐步调整走势。
+      const trendBoost = index > 16 ? randomInt(2, 5) : randomInt(1, 4) // 在尾段进一步放大上冲步长，形成更明显的上涨冲劲。
+      const wobbleDirection = randomInt(0, 4) // 随机决定当前点是上冲、横摆还是短暂回撤。
+      const wobbleOffset = wobbleDirection === 0 ? randomInt(2, 5) : wobbleDirection === 1 ? randomInt(1, 3) : randomInt(-2, 2) // 通过更大的波动偏移制造密集锯齿感。
+      currentY = clamp(currentY - trendBoost + wobbleOffset, 8, 48) // 让纵坐标总体向上，同时保留更大的局部振幅。
+    } // 结束单个点位趋势调整。
+    return `${pointX},${currentY}` // 组装当前点位为 polyline 需要的坐标文本。
+  }) // 结束折线点位遍历。
+  return pointPairs.join(' ') // 按空格拼出完整折线路径点位文本。
+} // 结束上涨折线点位生成函数定义。
+
+const buildRandomMarketCards = (): MarketCardRow[] => [
+  // 按规则生成两张手机行情卡片的随机数据。
+  {
+    label: 'KOSPI', // 固定保留 KOSPI 卡片标题。
+    name: formatDecimal(randomDecimal(2700, 5000)), // 将 KOSPI 第一组数值随机到 2700 到 5000 之间。
+    value: formatDecimal(randomDecimal(8, 20)), // 将 KOSPI 第二组数值随机到 8 到 20 之间。
+    change: `(+${randomDecimal(1, 5).toFixed(2)}%)`, // 将 KOSPI 涨跌幅随机到 1% 到 5% 之间。
+    points: buildRisingTrendPoints() // 为 KOSPI 卡片生成一条整体上涨的随机折线。
+  },
+  {
+    label: 'KOSDAQ', // 固定保留 KOSDAQ 卡片标题。
+    name: formatDecimal(randomDecimal(800, 3000)), // 将 KOSDAQ 第一组数值随机到 800 到 3000 之间。
+    value: formatDecimal(randomDecimal(8, 20)), // 将 KOSDAQ 第二组数值随机到 8 到 20 之间。
+    change: `(+${randomDecimal(1, 5).toFixed(2)}%)`, // 将 KOSDAQ 涨跌幅随机到 1% 到 5% 之间。
+    points: buildRisingTrendPoints() // 为 KOSDAQ 卡片生成一条整体上涨的随机折线。
+  }
+] // 结束手机行情卡片随机数据生成函数定义。
+
+const refreshPhoneRandomFields = () => {
+  // 统一刷新手机界面中按规则随机变化的字段。
+  marketCards.value = buildRandomMarketCards() // 每次刷新时都重新生成两张行情卡片的随机数值。
+  phoneAssetValue.value = buildRandomPhoneAssetValue() // 每次刷新时都重新生成一个新的总资产数值。
+  phoneTodayProfitAmount.value = buildRandomPhoneTodayProfitAmount() // 每次刷新时都重新生成一个新的今日收益金额数值。
+  phoneTodayProfitRate.value = buildRandomPhoneTodayProfitRate() // 每次刷新时都重新生成一个新的今日收益率数值。
+  phoneTime.value = buildRandomPhoneTime() // 每次刷新时都重新生成一个新的状态栏时间。
+  notificationBadgeCount.value = buildRandomNotificationBadgeCount() // 每次刷新时都重新生成一个新的铃铛角标数字。
+  updateBatteryLevel(buildRandomBatteryLevel()) // 每次刷新时都重新生成一个新的电池电量并同步到图标宽度。
+} // 结束手机随机字段刷新函数定义。
+
+const updateBatteryLevel = (level: number) => {
+  // 预留统一电池电量更新入口，后续计时器可直接调用。
+  batteryLevel.value = Math.round(level) // 将外部传入的电量四舍五入后写回响应式状态。
+} // 结束电池电量更新入口定义。
+
+const sleep = (durationMs: number) =>
+  new Promise(resolve => {
+    // 创建一个延时 Promise 供批量下载按节奏等待。
+    window.setTimeout(resolve, durationMs) // 在指定毫秒数后结束等待。
+  }) // 结束延时 Promise 定义。
+
+const normalizeBatchDownloadCountValue = (): number => {
+  // 将输入框中的批量下载数量规范到一到五十之间。
+  const parsedCount = Number.parseInt(batchDownloadCount.value, 10) // 尝试把当前输入值解析为整数。
+  const normalizedCount = Number.isNaN(parsedCount) ? 1 : Math.min(50, Math.max(1, parsedCount)) // 将非法值回退到一并限制最大最小范围。
+  batchDownloadCount.value = String(normalizedCount) // 将规范化后的数值同步写回输入框。
+  return normalizedCount // 返回后续流程真正使用的批量下载数量。
+} // 结束批量下载数量规范化函数定义。
+
+const formatTimestampPart = (value: number, length = 2): string => String(value).padStart(length, '0') // 将时间片段格式化为固定位数字符串。
+
+const buildDownloadTimestamp = (date = new Date()): string => {
+  // 生成适合文件名使用的时间戳文本。
+  const year = date.getFullYear() // 读取当前年份。
+  const month = formatTimestampPart(date.getMonth() + 1) // 读取当前月份并补齐两位。
+  const day = formatTimestampPart(date.getDate()) // 读取当前日期并补齐两位。
+  const hour = formatTimestampPart(date.getHours()) // 读取当前小时并补齐两位。
+  const minute = formatTimestampPart(date.getMinutes()) // 读取当前分钟并补齐两位。
+  const second = formatTimestampPart(date.getSeconds()) // 读取当前秒钟并补齐两位。
+  const millisecond = formatTimestampPart(date.getMilliseconds(), 3) // 读取当前毫秒并补齐三位。
+  return `${year}${month}${day}-${hour}${minute}${second}-${millisecond}` // 拼出统一的文件名时间戳格式。
+} // 结束时间戳文本生成函数定义。
+
+const capturePhoneScreenCanvas = async (): Promise<HTMLCanvasElement> => {
+  // 将当前手机屏幕导出为去掉边框且直角的截图 canvas。
+  if (!phoneScreenRef.value) {
+    // 判断截图目标节点是否已经成功挂载。
+    throw new Error('当前预览区域尚未准备完成') // 缺少节点时直接抛错交给上层流程处理。
+  } // 结束节点存在性判断。
+  await nextTick() // 确保本轮随机后的响应式数据已经渲染完成。
+  phoneScreenRef.value.classList.add('phone-screen-exporting') // 在截图前临时切换为导出态样式以去掉圆角。
+  try {
+    // 尝试按导出态样式生成当前手机屏幕截图。
+    return await html2canvas(phoneScreenRef.value, {
+      // 将当前手机屏幕节点直接渲染为高分辨率 canvas。
+      backgroundColor: '#ffffff', // 导出时固定使用白色背景以避免透明边缘影响观感。
+      useCORS: true, // 允许截图时加载同源或支持跨域的图片资源。
+      scale: Math.max(2, window.devicePixelRatio || 1) // 按较高像素比导出以保证截图足够清晰。
+    }) // 结束 html2canvas 截图调用。
+  } finally {
+    // 无论截图成功还是失败都需要恢复页面预览态样式。
+    phoneScreenRef.value.classList.remove('phone-screen-exporting') // 移除导出态 class 以恢复页面上的圆角屏幕显示。
+  } // 结束导出态样式收尾。
+} // 结束统一截图 canvas 生成函数定义。
+
+const canvasToBlob = async (canvas: HTMLCanvasElement): Promise<Blob> =>
+  new Promise((resolve, reject) => {
+    // 将截图 canvas 转为 png Blob 供单张下载和 zip 打包复用。
+    canvas.toBlob(blob => {
+      // 处理浏览器异步回传的 Blob 结果。
+      if (blob) {
+        // 成功拿到截图 Blob 时直接结束 Promise。
+        resolve(blob) // 返回可下载的 png 二进制对象。
+        return // 结束当前回调。
+      } // 结束成功分支。
+      reject(new Error('截图导出为 Blob 失败')) // 未拿到 Blob 时主动抛出失败信息。
+    }, 'image/png') // 指定将 canvas 编码为 png 格式。
+  }) // 结束 canvas 转 Blob Promise 定义。
+
+const triggerBlobDownload = (blob: Blob, fileName: string) => {
+  // 使用浏览器临时链接触发指定 Blob 文件下载。
+  const downloadLink = document.createElement('a') // 创建一次性下载链接节点。
+  const objectUrl = URL.createObjectURL(blob) // 将传入的 Blob 转换为可下载对象地址。
+  downloadLink.href = objectUrl // 将对象地址写入下载链接。
+  downloadLink.download = fileName // 设置最终下载到本地的文件名。
+  downloadLink.click() // 主动触发浏览器下载动作。
+  window.setTimeout(() => {
+    // 在当前调用栈结束后清理临时对象地址。
+    URL.revokeObjectURL(objectUrl) // 释放不再需要的对象地址避免内存泄漏。
+  }, 0) // 将释放动作延后到浏览器完成链接消费之后。
+} // 结束通用 Blob 下载触发函数定义。
+
+const refreshMarketData = async () => {
+  // 按当前本地已保存的勾选股票重新拉取最新行情。
+  if (isRefreshingMarketData.value) {
+    // 判断当前是否已有刷新请求在执行。
+    return // 避免一秒五轮询与手动刷新发生并发覆盖。
+  } // 结束刷新并发判断。
+  isRefreshingMarketData.value = true // 标记当前开始刷新手机行情。
+  try {
+    // 尝试请求最新行情接口。
+    const response = await $fetch<MarketDataResponse>('/api/market-data') // 调用本地行情接口获取前九只已勾选股票的最新数据。
+    marketData.value = response // 用最新响应覆盖手机界面数据源。
+    hasLoadedInitialMarketData.value = true // 首次成功拿到真实行情后永久关闭初始化 loading。
+  } catch (error) {
+    // 捕获行情刷新过程中的异常。
+    console.error('刷新手机持仓行情失败', error) // 将轮询异常打印到控制台，避免界面重复弹窗打扰。
+  } finally {
+    // 无论成功还是失败都结束刷新标记。
+    isRefreshingMarketData.value = false // 清除刷新中的状态。
+  } // 结束本次行情刷新流程。
+} // 结束手机持仓行情刷新函数。
+
+const downloadPreviewImage = async () => {
+  // 将当前手机屏幕可见内容直接导出为 png 图片。
+  if (isDownloadingPreviewImage.value || isBatchDownloadingPreviewImages.value) {
+    // 如果当前已经在导出中则直接终止重复点击。
+    return // 避免重复生成多个截图任务。
+  } // 结束重复点击判断。
+  isDownloadingPreviewImage.value = true // 标记当前开始执行截图导出。
+  try {
+    const canvas = await capturePhoneScreenCanvas() // 先生成当前手机屏幕的导出截图 canvas。
+    const imageBlob = await canvasToBlob(canvas) // 将截图 canvas 转换为可下载的 png Blob。
+    const imageFileName = `phone-screen-${buildDownloadTimestamp()}.png` // 按时间戳规则生成当前单图文件名。
+    triggerBlobDownload(imageBlob, imageFileName) // 触发浏览器下载当前单张 png 截图。
+    ElMessage.success('当前手机界面已下载为 PNG 图片') // 下载成功后给出轻提示反馈。
+  } catch (error) {
+    // 捕获截图或下载过程中的异常。
+    console.error('导出手机界面图片失败', error) // 将失败原因输出到控制台便于排查。
+    ElMessage.error('下载图片失败，请稍后重试') // 下载失败时向用户展示错误反馈。
+  } finally {
+    // 无论成功或失败都要结束下载状态。
+    isDownloadingPreviewImage.value = false // 重置导出状态以恢复按钮可点击。
+  } // 结束导出图片流程。
+} // 结束手机界面 png 下载函数定义。
+
+const batchDownloadPreviewImages = async () => {
+  // 按输入数量批量随机手机界面并打包下载所有 png 截图。
+  if (isDownloadingPreviewImage.value || isBatchDownloadingPreviewImages.value) {
+    // 如果当前已有单张或批量下载任务在执行则直接终止。
+    return // 避免多个下载任务并发导致状态互相覆盖。
+  } // 结束并发下载判断。
+  isBatchDownloadingPreviewImages.value = true // 标记当前开始执行批量下载流程。
+  try {
+    // 尝试执行整批截图和 zip 打包下载。
+    const totalDownloadCount = normalizeBatchDownloadCountValue() // 先把批量下载数量规范到允许范围内。
+    const zipArchive = new JSZip() // 创建一个新的 zip 压缩包实例。
+    const batchStartTime = performance.now() // 记录当前批量任务开始时间用于控制下载节奏。
+    const intervalDurationMs = 100 // 按每十张一秒换算出每张截图的目标间隔为一百毫秒。
+    for (let currentIndex = 0; currentIndex < totalDownloadCount; currentIndex += 1) {
+      // 按输入数量依次生成每一张随机截图。
+      const expectedStartTime = batchStartTime + currentIndex * intervalDurationMs // 计算当前这一张截图理论上应该开始的时间点。
+      const waitDurationMs = expectedStartTime - performance.now() // 计算距离理论开始时间还需要等待多少毫秒。
+      if (waitDurationMs > 0) {
+        // 仅在当前速度快于目标节奏时才主动等待。
+        await sleep(waitDurationMs) // 等待到当前截图该开始的时间点。
+      } // 结束节奏等待判断。
+      refreshPhoneRandomFields() // 按当前已有逻辑刷新本地随机字段以生成新一张界面状态。
+      const canvas = await capturePhoneScreenCanvas() // 将本轮随机后的手机屏幕导出为截图 canvas。
+      const imageBlob = await canvasToBlob(canvas) // 将截图 canvas 转为 png Blob 以便写入压缩包。
+      const imageFileName = `phone-screen-${buildDownloadTimestamp()}.png` // 按时间戳规则生成当前截图在压缩包中的文件名。
+      zipArchive.file(imageFileName, imageBlob) // 将当前截图文件写入 zip 压缩包。
+    } // 结束整批截图循环。
+    const zipBlob = await zipArchive.generateAsync({ type: 'blob' }) // 将所有截图异步打包生成最终 zip Blob。
+    const zipFileName = `phone-screen-batch-${buildDownloadTimestamp()}.zip` // 按时间戳规则生成压缩包文件名。
+    triggerBlobDownload(zipBlob, zipFileName) // 触发浏览器下载最终 zip 压缩包。
+    ElMessage.success(`已打包下载 ${totalDownloadCount} 张 PNG 图片`) // 批量下载成功后提示本次导出的图片数量。
+  } catch (error) {
+    // 捕获批量下载或压缩打包过程中的异常。
+    console.error('批量导出手机界面图片失败', error) // 将失败原因输出到控制台便于排查。
+    ElMessage.error('批量下载失败，请稍后重试') // 批量下载失败时向用户展示错误反馈。
+  } finally {
+    // 无论成功还是失败都需要结束批量下载状态。
+    isBatchDownloadingPreviewImages.value = false // 重置批量导出状态以恢复按钮和输入框交互。
+  } // 结束批量下载流程收尾。
+} // 结束批量手机界面 png 下载函数定义。
 
 const addStock = async () => {
   // 按当前输入的完整股票名称调用后端查询接口。
@@ -286,7 +585,7 @@ const addStock = async () => {
     ElMessage.success('匹配成功，已添加到预设列表') // 使用 Element 消息提示添加成功。
     stockName.value = '' // 添加成功后清空输入框内容。
     await nextTick() // 等待表格根据最新数据重新渲染。
-    applyPresetSelection() // 根据最新 enabled 状态同步表格勾选。
+    await applyPresetSelection() // 根据最新 enabled 状态同步表格勾选。
   } catch (error) {
     // 捕获查询过程中的异常情况。
     const statusMessage = error && typeof error === 'object' && 'statusMessage' in error ? String(error.statusMessage ?? '') : error instanceof Error ? error.message : '' // 尝试优先读取接口返回的错误文案。
@@ -299,8 +598,9 @@ const addStock = async () => {
   } // 结束添加流程收尾。
 } // 结束新增股票函数。
 
-const applyPresetSelection = () => {
+const applyPresetSelection = async () => {
   // 将 enabled 状态同步回表格勾选表现。
+  isApplyingPresetSelection.value = true // 标记当前开始执行程序化勾选回填。
   presetTableRef.value?.clearSelection() // 先清空表格当前的所有勾选状态。
   presets.value.forEach(stock => {
     // 遍历当前预设股票列表。
@@ -309,10 +609,16 @@ const applyPresetSelection = () => {
       presetTableRef.value?.toggleRowSelection(stock, true) // 将当前股票恢复为选中状态。
     } // 结束单条启用判断。
   }) // 结束预设股票遍历。
+  await nextTick() // 等待表格完成本轮勾选状态同步。
+  isApplyingPresetSelection.value = false // 标记程序化勾选回填已经结束。
 } // 结束表格勾选同步。
 
 const syncPresetSelection = (selection: PresetStock[]) => {
   // 同步表格勾选结果回页面数据。
+  if (isApplyingPresetSelection.value) {
+    // 程序主动回填勾选时不反向覆盖 enabled 状态。
+    return // 结束本次程序化勾选同步。
+  } // 结束程序化勾选拦截。
   presets.value.forEach(stock => {
     // 遍历所有预设股票。
     stock.enabled = selection.some(item => item.code === stock.code) // 根据当前选择状态更新 enabled 字段。
@@ -339,11 +645,14 @@ const savePresets = async () => {
     savedPresets.value = clonePresetStocks(response.stocks) // 更新最近一次已保存的快照数据。
     hasSavedPresetFile.value = true // 标记当前预设股票已经完成本地落盘。
     presetSaveMessage.value = '预设股票已保存到本地配置' // 更新保存成功的提示信息。
+    ElMessage.success('预设股票已保存到本地配置') // 使用 Element 消息提示当前保存成功。
     await nextTick() // 等待表格依据最新数据完成重新渲染。
-    applyPresetSelection() // 按最新 enabled 状态恢复表格勾选。
+    await applyPresetSelection() // 按最新 enabled 状态恢复表格勾选。
+    await refreshMarketData() // 保存成功后立即按本地最新勾选状态刷新手机持仓区。
   } catch {
     // 捕获保存流程中的异常情况。
     presetSaveMessage.value = '保存失败，本地配置未更新' // 更新保存失败的提示信息。
+    ElMessage.error('保存失败，本地配置未更新') // 使用 Element 消息提示当前保存失败。
   } finally {
     // 无论成功还是失败都收尾。
     isSavingPresets.value = false // 结束保存中的状态标记。
@@ -354,14 +663,37 @@ onMounted(() => {
   // 页面挂载后恢复默认勾选状态。
   nextTick(() => {
     // 等待表格渲染完成后再设置选中行。
-    applyPresetSelection() // 根据当前 enabled 状态恢复表格勾选。
-    presetSaveMessage.value = '未点击保存前，本地 json 不会更新' // 初始化未保存提示文案。
+    void applyPresetSelection() // 根据当前 enabled 状态恢复表格勾选。
   }) // 结束 nextTick 回调。
+  refreshPhoneRandomFields() // 页面进入后先立即刷新一次本地随机字段，避免其他区域等待接口后才开始变化。
+  void refreshMarketData() // 页面进入后立即再拉取一次最新持仓行情，确保客户端显示的是当前值。
+  phoneRandomRefreshTimer.value = window.setInterval(() => {
+    // 创建一秒五本地随机定时器以持续刷新不依赖接口的展示字段。
+    refreshPhoneRandomFields() // 每次轮询都直接刷新手机本地随机字段而不等待接口返回。
+  }, randomRefreshIntervalMs) // 结束本地随机定时器注册。
+  marketDataRefreshTimer.value = window.setInterval(() => {
+    // 创建一秒五接口轮询定时器以持续刷新手机持仓区。
+    void refreshMarketData() // 每次轮询都重新获取本地已勾选股票的最新行情，但不阻塞其他随机区域。
+  }, randomRefreshIntervalMs) // 结束一秒五轮询注册。
 }) // 结束挂载初始化。
+
+onBeforeUnmount(() => {
+  // 页面卸载前清理所有轮询定时器。
+  if (phoneRandomRefreshTimer.value !== null) {
+    // 判断当前是否存在已注册的本地随机定时器。
+    window.clearInterval(phoneRandomRefreshTimer.value) // 清除本地随机轮询以避免页面离开后继续执行。
+    phoneRandomRefreshTimer.value = null // 重置本地随机定时器引用状态。
+  } // 结束本地随机定时器存在判断。
+  if (marketDataRefreshTimer.value !== null) {
+    // 判断当前是否存在已注册的接口轮询定时器。
+    window.clearInterval(marketDataRefreshTimer.value) // 清除接口轮询以避免页面离开后继续请求。
+    marketDataRefreshTimer.value = null // 重置接口轮询定时器引用状态。
+  } // 结束接口定时器存在判断。
+}) // 结束卸载清理逻辑。
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :aria-busy="shouldShowHoldingsLoading">
     <NuxtRouteAnnouncer />
 
     <header class="window-bar">
@@ -393,7 +725,7 @@ onMounted(() => {
               {{ isSavingPresets ? '保存中...' : '保存' }}
             </el-button>
           </div>
-          <el-table ref="presetTableRef" class="preset-table" :data="presets" @selection-change="syncPresetSelection">
+          <el-table ref="presetTableRef" class="preset-table" :data="presets" :height="460" @selection-change="syncPresetSelection">
             <el-table-column type="selection" width="78" align="center" header-align="center" class-name="selection-column" label-class-name="selection-column" />
             <el-table-column label="股票名称" align="center" header-align="center" class-name="stock-name-cell">
               <template #default="{ row }">
@@ -405,13 +737,11 @@ onMounted(() => {
             <el-table-column label="操作" align="center" header-align="center">
               <template #default>
                 <div class="actions">
-                  <el-button class="table-action-btn">编辑</el-button>
                   <el-button class="table-action-btn danger">删除</el-button>
                 </div>
               </template>
             </el-table-column>
           </el-table>
-          <p class="hint">ⓘ {{ presetSaveMessage }}</p>
         </div>
       </section>
 
@@ -419,14 +749,25 @@ onMounted(() => {
         <h1>手机界面预览</h1>
 
         <div class="phone-frame" :style="{ '--theme': selectedTheme.accent, '--theme-dark': selectedTheme.accentDark }">
-          <div class="phone-screen">
+          <div ref="phoneScreenRef" class="phone-screen">
             <div class="phone-content">
               <div class="phone-status">
-                <strong>9:41</strong>
+                <strong>{{ phoneTime }}</strong>
                 <div class="status-icons">
-                  <span>▮▮▮</span>
-                  <span>⌁</span>
-                  <span class="battery" />
+                  <!-- 右上角信号和 WiFi 改为图片资源，便于直接替换为更贴近真机的图标素材。 -->
+                  <span class="status-signal" aria-hidden="true">
+                    <img src="/status-signal.svg" alt="" />
+                  </span>
+                  <span class="status-wifi" aria-hidden="true">
+                    <img src="/status-wifi.svg" alt="" />
+                  </span>
+                  <span class="battery" :aria-label="`当前电池电量 ${normalizedBatteryLevel}%`">
+                    <svg viewBox="0 0 26 14" role="presentation">
+                      <rect x="1" y="2" width="20" height="10" rx="3" ry="3" fill="none" stroke="currentColor" stroke-width="1.6" />
+                      <rect x="22.25" y="5" width="1.7" height="4" rx="1" ry="1" fill="currentColor" opacity="0.9" />
+                      <rect x="2.7" y="3.8" :width="batteryFillWidth" height="6.4" rx="1.8" ry="1.8" fill="currentColor" />
+                    </svg>
+                  </span>
                 </div>
               </div>
 
@@ -461,7 +802,7 @@ onMounted(() => {
                   <span class="broker-tool broker-tool-alert">
                     <span class="broker-tool-bell-wrap">
                       <el-icon class="broker-tool-icon broker-tool-icon-bell"><Bell /></el-icon>
-                      <i class="broker-tool-badge">2</i>
+                      <i class="broker-tool-badge">{{ notificationBadgeCount }}</i>
                     </span>
                   </span>
                   <span class="broker-tool broker-tool-my">MY</span>
@@ -485,8 +826,10 @@ onMounted(() => {
                 <div class="asset-top">
                   <div>
                     <p>{{ selectedTheme.assetLabel }} <span>◉</span></p>
-                    <strong>{{ selectedTheme.assetValue }}<small>원</small></strong>
-                    <em>{{ selectedTheme.today }} 〉</em>
+                    <strong>{{ formatInteger(phoneAssetValue) }}<small>원</small></strong>
+                    <em
+                      ><span>오늘 {{ phoneTodayProfitAmountText }}</span> <span>{{ phoneTodayProfitRateText }}</span> 〉</em
+                    >
                   </div>
                   <button>{{ selectedTheme.badge }}</button>
                 </div>
@@ -499,14 +842,14 @@ onMounted(() => {
               </section>
 
               <section class="market-strip">
-                <article v-for="card in marketCards" :key="card.name">
-                  <div>
-                    <p>{{ card.name }}</p>
-                    <strong>{{ card.value }}</strong>
-                    <em>{{ card.change }}</em>
+                <article v-for="card in marketCards" :key="card.label">
+                  <div class="market-strip-copy">
+                    <p>{{ card.label }}</p>
+                    <strong>{{ card.name }}</strong>
+                    <em>▲ {{ card.value }} {{ card.change }}</em>
                   </div>
                   <svg viewBox="0 0 130 58" aria-hidden="true">
-                    <polyline points="4,44 18,28 30,34 41,22 56,25 68,18 78,13 88,20 98,8 110,17 124,12" />
+                    <polyline :points="card.points" />
                   </svg>
                 </article>
                 <div class="dots">
@@ -516,10 +859,23 @@ onMounted(() => {
                 </div>
               </section>
 
+              <!-- 持仓区改为展示本地已保存且已勾选股票的实时行情，固定总高度并最多展示九条。 -->
               <section class="holdings">
+                <div v-if="shouldShowHoldingsLoading" class="holdings-loading-mask">
+                  <span class="holdings-loading-spinner" />
+                  <strong>正在获取持仓行情</strong>
+                  <p>接口返回前，其它随机区域仍会继续刷新</p>
+                </div>
                 <div class="holding-title">
-                  <h2>보유종목 (9)</h2>
-                  <button>평가금액순⌄</button>
+                  <h2>보유종목 ({{ previewHoldings.length }})</h2>
+                  <el-dropdown class="more-dropdown">
+                    <span class="el-dropdown-link more-dropdown-link" style="font-weight: bold">
+                      평가금액순
+                      <el-icon class="el-icon--right" style="font-weight: bold">
+                        <ArrowDown />
+                      </el-icon>
+                    </span>
+                  </el-dropdown>
                   <span>⚙</span>
                 </div>
                 <div class="holding-head">
@@ -530,7 +886,7 @@ onMounted(() => {
                   <span>평가손익(원)</span>
                   <span>수익률(%)</span>
                 </div>
-                <div class="holding-row" v-for="row in holdings" :key="row.code">
+                <div class="holding-row" v-for="row in previewHoldings" :key="row.code">
                   <div>
                     <strong>{{ row.name }}</strong>
                     <small>{{ row.code }}</small>
@@ -541,7 +897,25 @@ onMounted(() => {
                   <span :class="row.up ? 'up' : 'down'">{{ row.profit }}</span>
                   <span :class="row.up ? 'up' : 'down'">{{ row.rate }}</span>
                 </div>
-                <button class="more-btn">더보기⌄</button>
+                <div class="holding-row placeholder" v-for="placeholderIndex in holdingPlaceholderRows" :key="`placeholder-${placeholderIndex}`" aria-hidden="true">
+                  <div>
+                    <strong>&nbsp;</strong>
+                    <small>&nbsp;</small>
+                  </div>
+                  <span>&nbsp;</span>
+                  <span>&nbsp;</span>
+                  <span>&nbsp;</span>
+                  <span>&nbsp;</span>
+                  <span>&nbsp;</span>
+                </div>
+                <el-dropdown class="more-dropdown">
+                  <span class="el-dropdown-link more-dropdown-link">
+                    더보기
+                    <el-icon class="el-icon--right">
+                      <ArrowDown />
+                    </el-icon>
+                  </span>
+                </el-dropdown>
               </section>
 
               <section class="promo" :style="{ background: selectedTheme.adColor }">
@@ -606,7 +980,7 @@ onMounted(() => {
           <button v-for="logo in logoOptions" :key="logo.id" class="logo-option" :class="{ selected: selectedLogo.id === logo.id }" @click="selectedLogo = logo">
             <span class="logo-thumb">
               <span class="logo-thumb-inner">
-                <img class="logo-thumb-image" :src="logo.logoPath" :alt="logo.name">
+                <img class="logo-thumb-image" :src="logo.logoPath" :alt="logo.name" />
               </span>
             </span>
             <span class="option-copy">
@@ -642,11 +1016,14 @@ onMounted(() => {
         <div class="card download-card">
           <h2>下载操作</h2>
           <div class="batch-download-row">
-            <el-input v-model="batchDownloadCount" class="batch-count-input" type="number" min="1" />
-            <el-button class="batch-download-btn">批量下载</el-button>
+            <el-input v-model="batchDownloadCount" class="batch-count-input" type="number" min="1" max="50" :disabled="isDownloadingPreviewImage || isBatchDownloadingPreviewImages" @change="normalizeBatchDownloadCountValue" />
+            <el-button class="batch-download-btn" :loading="isBatchDownloadingPreviewImages" :disabled="isDownloadingPreviewImage || isBatchDownloadingPreviewImages" @click="batchDownloadPreviewImages">
+              {{ isBatchDownloadingPreviewImages ? '批量打包中...' : '批量下载' }}
+            </el-button>
           </div>
-          <el-button class="download-btn">⇩ 下载图片</el-button>
-          <p class="download-note">点击下载时使用当前最新数据生成图片</p>
+          <el-button class="download-btn" :loading="isDownloadingPreviewImage" style="margin-top: 10px" :disabled="isDownloadingPreviewImage || isBatchDownloadingPreviewImages" @click="downloadPreviewImage">
+            {{ isDownloadingPreviewImage ? '图片导出中...' : '⇩ 下载图片' }}
+          </el-button>
         </div>
       </section>
     </main>
@@ -678,6 +1055,12 @@ input {
   min-height: 100dvh;
   overflow-x: hidden;
   background: radial-gradient(circle at 50% 8%, rgba(11, 76, 49, 0.08), transparent 34rem), #fbfaf7;
+}
+
+@keyframes initial-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .window-bar {
@@ -1027,6 +1410,10 @@ h2 {
   background: #fff;
 }
 
+.phone-screen.phone-screen-exporting {
+  border-radius: 0;
+}
+
 .phone-screen::before {
   position: absolute;
   z-index: 3;
@@ -1038,6 +1425,11 @@ h2 {
   background: #050505;
   content: '';
   transform: translateX(-50%);
+}
+
+.phone-screen.phone-screen-exporting::before {
+  display: none;
+  content: none;
 }
 
 .phone-content {
@@ -1057,18 +1449,58 @@ h2 {
   font-size: 10px;
 }
 
+.phone-status strong {
+  font-size: 12px;
+}
+
 .status-icons {
   display: flex;
-  gap: 6px;
-  align-items: center;
-  font-size: 8px;
+  gap: 4px;
+  align-items: flex-end;
+  color: #111;
+}
+
+.status-signal {
+  display: inline-flex;
+  width: 18px;
+  height: 12px;
+  transform: translateY(-0.35px);
+}
+
+.status-signal img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.status-wifi {
+  display: inline-flex;
+  width: 17px;
+  height: 13px;
+  transform: translateY(-1.3px);
+}
+
+.status-wifi img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .battery {
-  width: 20px;
-  height: 9px;
-  border: 2px solid #111;
-  border-radius: 3px;
+  display: inline-flex;
+  width: 26px;
+  height: 14px;
+  margin-left: 1px;
+  transform: translateY(0);
+}
+
+.battery svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  color: currentColor;
 }
 
 .broker-head {
@@ -1375,17 +1807,20 @@ h2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   margin: 5px 11px 0;
-  padding: 9px 9px 14px;
+  min-height: 82px;
+  padding: 10px 9px 15px;
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
 }
 
 .market-strip article {
-  display: flex;
-  gap: 5px;
-  justify-content: space-between;
-  padding-right: 10px;
+  display: grid;
+  grid-template-columns: 78px 38px;
+  align-items: center;
+  column-gap: 10px;
+  justify-content: start;
+  padding-right: 0;
 }
 
 .market-strip article + article {
@@ -1393,9 +1828,14 @@ h2 {
   border-left: 1px solid #eeeeee;
 }
 
+.market-strip-copy {
+  width: 78px;
+  min-width: 78px;
+}
+
 .market-strip p {
   margin: 0 0 1px;
-  font-size: 8px;
+  font-size: 7.4px;
   font-weight: 800;
 }
 
@@ -1406,18 +1846,21 @@ h2 {
 }
 
 .market-strip strong {
-  font-size: 15px;
+  font-size: 18px;
+  line-height: 1.05;
 }
 
 .market-strip em {
   margin-top: 1px;
-  font-size: 5.5px;
+  font-size: 7.2px;
   font-style: normal;
+  font-weight: 800;
+  line-height: 1.15;
 }
 
 .market-strip svg {
   width: 38px;
-  align-self: end;
+  align-self: center;
 }
 
 .market-strip polyline {
@@ -1447,11 +1890,49 @@ h2 {
 }
 
 .holdings {
+  position: relative;
   margin: 7px 11px 0;
   padding-top: 3px;
   padding-bottom: 4px;
   border-radius: 8px;
   background: #fff;
+}
+
+.holdings-loading-mask {
+  position: absolute;
+  inset: 24px 0 18px;
+  z-index: 3;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 18px 14px;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(3px);
+  text-align: center;
+}
+
+.holdings-loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid rgba(0, 83, 57, 0.14);
+  border-top-color: #005339;
+  border-radius: 50%;
+  animation: initial-loading-spin 0.9s linear infinite;
+}
+
+.holdings-loading-mask strong {
+  color: #14372a;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.holdings-loading-mask p {
+  margin: 0;
+  color: #5a675f;
+  font-size: 8px;
+  line-height: 1.4;
 }
 
 .holding-title {
@@ -1467,11 +1948,26 @@ h2 {
 }
 
 .holding-title button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 1px;
+  width: fit-content;
   border: 0;
   border-radius: 999px;
   background: #f6f6f6;
-  font-size: 8px;
+  padding: 1px 4px;
+  font-size: 7px;
   font-weight: 700;
+}
+
+.down-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.55em;
+  line-height: 1;
+  transform: translateY(-0.1px);
 }
 
 .holding-head,
@@ -1494,6 +1990,10 @@ h2 {
   padding: 0 9px;
   border-bottom: 1px solid #f1f1f1;
   font-size: 7.5px;
+}
+
+.holding-row.placeholder {
+  color: transparent;
 }
 
 .holding-row strong,
@@ -1519,12 +2019,38 @@ h2 {
 }
 
 .more-btn {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
   margin: 2px auto 3px;
   border: 0;
   background: transparent;
   color: #555;
   font-size: 9px;
+}
+
+.more-dropdown {
+  display: flex;
+  justify-content: center;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.more-dropdown-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  color: #555;
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.more-dropdown-link .el-icon--right {
+  margin-left: 0;
+  font-size: 10px;
 }
 
 .promo {
@@ -1886,6 +2412,15 @@ h2 {
   font-size: 20px;
 }
 
+.download-btn.el-button:hover,
+.download-btn.el-button:focus-visible,
+.download-btn.el-button:active {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(180deg, #006342, #003f2d);
+  box-shadow: none;
+}
+
 .batch-download-row {
   display: flex;
   gap: 8px;
@@ -2123,6 +2658,10 @@ h2 {
     border-radius: 30px;
   }
 
+  .phone-screen.phone-screen-exporting {
+    border-radius: 0;
+  }
+
   .phone-content {
     width: calc(100% / 0.8);
     height: calc(100% / 0.8);
@@ -2137,21 +2676,41 @@ h2 {
     border-radius: 0 0 13px 13px;
   }
 
+  .phone-screen.phone-screen-exporting::before {
+    display: none;
+    content: none;
+  }
+
   .phone-status {
     height: 24px;
     padding: 0 18px;
     font-size: 8px;
   }
 
+  .phone-status strong {
+    font-size: 10px;
+  }
+
   .status-icons {
-    gap: 4px;
-    font-size: 6px;
+    gap: 3px;
+  }
+
+  .status-signal {
+    height: 8px;
+    width: 12px;
+    transform: translateY(-0.25px);
+  }
+
+  .status-wifi {
+    width: 12px;
+    height: 9px;
+    transform: translateY(-1.2px);
   }
 
   .battery {
-    width: 16px;
-    height: 7px;
-    border-width: 1px;
+    width: 18px;
+    height: 10px;
+    margin-left: 1px;
   }
 
   .broker-head {
@@ -2287,13 +2846,16 @@ h2 {
 
   .market-strip {
     margin: 5px 8px 0;
-    padding: 7px 7px 11px;
+    min-height: 52px;
+    padding: 8px 7px 12px;
     border-radius: 7px;
   }
 
   .market-strip article {
-    gap: 3px;
-    padding-right: 6px;
+    grid-template-columns: 50px 24px;
+    column-gap: 6px;
+    justify-content: start;
+    padding-right: 0;
   }
 
   .market-strip article + article {
@@ -2302,20 +2864,24 @@ h2 {
 
   .market-strip p {
     margin-bottom: 1px;
-    font-size: 4.5px;
+    font-size: 4.2px;
   }
 
   .market-strip strong {
-    font-size: 10px;
+    font-size: 12.4px;
+    line-height: 1.05;
   }
 
   .market-strip em {
     margin-top: 0;
-    font-size: 3px;
+    font-size: 4px;
+    font-weight: 800;
+    line-height: 1.12;
   }
 
   .market-strip svg {
     width: 24px;
+    align-self: center;
   }
 
   .dots {
@@ -2334,6 +2900,26 @@ h2 {
     padding-bottom: 4px;
   }
 
+  .holdings-loading-mask {
+    inset: 18px 0 14px;
+    gap: 5px;
+    padding: 12px 8px;
+  }
+
+  .holdings-loading-spinner {
+    width: 16px;
+    height: 16px;
+    border-width: 2px;
+  }
+
+  .holdings-loading-mask strong {
+    font-size: 7px;
+  }
+
+  .holdings-loading-mask p {
+    font-size: 4.6px;
+  }
+
   .holding-title {
     gap: 4px;
     padding: 0 7px 2px;
@@ -2344,7 +2930,12 @@ h2 {
   }
 
   .holding-title button {
-    font-size: 5px;
+    padding: 1px 3px;
+    font-size: 4.6px;
+  }
+
+  .down-arrow {
+    transform: translateY(-0.1px);
   }
 
   .holding-head,
@@ -2379,6 +2970,19 @@ h2 {
   .more-btn {
     margin: 1px auto 2px;
     font-size: 5px;
+  }
+
+  .more-dropdown-link {
+    font-size: 4.6px;
+  }
+
+  .more-dropdown-link .el-icon--right {
+    font-size: 5.8px;
+  }
+
+  .more-dropdown {
+    padding-top: 1px;
+    padding-bottom: 1px;
   }
 
   .promo {
@@ -2496,3 +3100,4 @@ h2 {
   }
 }
 </style>
+.market-strip-copy { width: 50px; min-width: 50px; }

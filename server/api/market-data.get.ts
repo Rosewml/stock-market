@@ -23,6 +23,8 @@ interface MarketDataResponse { // 定义行情接口响应结构。
   holdings: MarketHoldingRow[] // 已启用股票的行情列表。
 } // 结束行情接口响应定义。
 
+const MAX_DISPLAY_HOLDINGS = 9 // 限制单次最多只为手机界面准备九条股票数据。
+
 const hashText = (value: string): number => { // 将字符串转换为稳定数值哈希。
   return value.split('').reduce((total, char) => ((total * 33) + char.charCodeAt(0)) % 2147483647, 7) // 使用简单稳定哈希生成伪随机种子。
 } // 结束哈希函数。
@@ -110,7 +112,7 @@ const buildHoldingRow = async (stock: PresetStock): Promise<MarketHoldingRow> =>
 
 export default defineEventHandler(async (): Promise<MarketDataResponse> => { // 定义读取已启用股票实时行情的接口。
   const stocksState = await readStocksState() // 读取本地股票配置状态。
-  const enabledStocks = stocksState.stocks.filter((stock) => stock.enabled) // 仅保留当前启用中的股票。
+  const enabledStocks = stocksState.stocks.filter((stock) => stock.enabled).slice(0, MAX_DISPLAY_HOLDINGS) // 仅保留当前启用中的前九只股票。
   const holdings = await Promise.all(enabledStocks.map((stock) => buildHoldingRow(stock))) // 并行拉取所有启用股票的实时数据。
   return { // 返回完整行情响应结构。
     generatedAt: new Date().toISOString(), // 记录本次行情生成时间。
